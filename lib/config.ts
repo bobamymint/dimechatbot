@@ -3,8 +3,8 @@
 // the colors below are a placeholder minimal fintech palette
 // (deep navy + gold), set in tailwind.config.ts as `brand` / `accent`.
 export const siteConfig = {
-  name: "Dime",
-  tagline: "Ask me anything about Dime.",
+  name: "Dime Nern",
+  tagline: "Ask me anything about Dime Nern.",
   // Shown when the bot has no relevant knowledge for a question.
   fallbackMessage:
     "I don't have information about that yet. Try asking something else, or let the team know so it can be added to my knowledge base.",
