@@ -25,9 +25,35 @@ ${context || "(no relevant knowledge found for this question)"}
 """`;
 }
 
+// Phrases that show up when the model is telling the user it doesn't have
+// the information (per the system prompt rule above). Used as a
+// best-effort heuristic to flag whether a question was actually answered,
+// vs. just "context was found but didn't actually contain the answer".
+// Not 100% precise — the model's exact wording can vary — but it catches
+// the overwhelming majority of "I don't know" style replies in both
+// Thai and English.
+const NO_INFO_PATTERNS = [
+  "ไม่มีข้อมูล",
+  "ไม่พบข้อมูล",
+  "ยังไม่มีข้อมูล",
+  "ไม่ทราบข้อมูล",
+  "don't have that information",
+  "don't have information",
+  "do not have information",
+  "no information about",
+  "i don't have",
+  "i do not have",
+];
+
+function looksAnswered(fullText: string): boolean {
+  const lower = fullText.toLowerCase();
+  return !NO_INFO_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
+}
+
 // Fire-and-forget: reads the tee'd log branch of the stream to accumulate
-// the full answer text, then writes it into the chat_logs row we created
-// before streaming started. Never throws into the main request path.
+// the full answer text, then writes it (plus the "answered" heuristic)
+// into the chat_logs row we created before streaming started. Never
+// throws into the main request path.
 async function logAnswerWhenDone(
   supabase: ReturnType<typeof createAdminClient>,
   logId: string | undefined,
@@ -44,7 +70,10 @@ async function logAnswerWhenDone(
       if (done) break;
       full += decoder.decode(value, { stream: true });
     }
-    await supabase.from("chat_logs").update({ answer: full }).eq("id", logId);
+    await supabase
+      .from("chat_logs")
+      .update({ answer: full, answered: looksAnswered(full) })
+      .eq("id", logId);
   } catch (e) {
     console.error("chat log answer capture failed", e);
   }
@@ -82,9 +111,11 @@ export async function POST(req: NextRequest) {
     const context = matchList.map((m) => m.content).join("\n\n---\n\n");
 
     // 2b. Log the question immediately, flagged by whether we found
-    // relevant knowledge. The answer text is filled in once streaming
-    // finishes (see logAnswerWhenDone below). This insert is best-effort
-    // and never blocks or fails the actual chat response.
+    // relevant knowledge chunks (has_knowledge — a search-side signal).
+    // The "answered" flag (whether the final reply actually contained
+    // an answer, vs. an "I don't know") is filled in once streaming
+    // finishes — see logAnswerWhenDone. This insert is best-effort and
+    // never blocks or fails the actual chat response.
     let logId: string | undefined;
     try {
       const { data: logRow, error: logError } = await supabase
