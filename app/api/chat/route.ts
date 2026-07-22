@@ -25,6 +25,31 @@ ${context || "(no relevant knowledge found for this question)"}
 """`;
 }
 
+// Fire-and-forget: reads the tee'd log branch of the stream to accumulate
+// the full answer text, then writes it into the chat_logs row we created
+// before streaming started. Never throws into the main request path.
+async function logAnswerWhenDone(
+  supabase: ReturnType<typeof createAdminClient>,
+  logId: string | undefined,
+  logStream: ReadableStream<Uint8Array>
+) {
+  if (!logId) return;
+  try {
+    const reader = logStream.getReader();
+    const decoder = new TextDecoder();
+    let full = "";
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      full += decoder.decode(value, { stream: true });
+    }
+    await supabase.from("chat_logs").update({ answer: full }).eq("id", logId);
+  } catch (e) {
+    console.error("chat log answer capture failed", e);
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as ChatRequestBody;
@@ -51,9 +76,34 @@ export async function POST(req: NextRequest) {
       console.error("match_document_chunks error", error);
     }
 
-    const context = (matches || [])
-      .map((m: { content: string }) => m.content)
-      .join("\n\n---\n\n");
+    const matchList = (matches || []) as { content: string; similarity: number }[];
+    const hasKnowledge = matchList.length > 0;
+    const topSimilarity = hasKnowledge ? matchList[0].similarity : null;
+    const context = matchList.map((m) => m.content).join("\n\n---\n\n");
+
+    // 2b. Log the question immediately, flagged by whether we found
+    // relevant knowledge. The answer text is filled in once streaming
+    // finishes (see logAnswerWhenDone below). This insert is best-effort
+    // and never blocks or fails the actual chat response.
+    let logId: string | undefined;
+    try {
+      const { data: logRow, error: logError } = await supabase
+        .from("chat_logs")
+        .insert({
+          question: lastUserMessage.content,
+          has_knowledge: hasKnowledge,
+          top_similarity: topSimilarity,
+        })
+        .select("id")
+        .single();
+      if (logError) {
+        console.error("chat_logs insert error", logError);
+      } else {
+        logId = logRow?.id;
+      }
+    } catch (logErr) {
+      console.error("chat_logs insert failed", logErr);
+    }
 
     // 3. Stream the answer back, grounded strictly in that context.
     // Prefer Groq (much higher free-tier request volume) when configured,
@@ -78,7 +128,13 @@ export async function POST(req: NextRequest) {
       stream = await streamChat(systemPrompt, recentHistory);
     }
 
-    return new Response(stream, {
+    // Split the stream: one branch goes to the client as before, the
+    // other is consumed in the background to capture the full answer
+    // text for chat_logs, without delaying or altering the response.
+    const [clientStream, logStream] = stream.tee();
+    void logAnswerWhenDone(supabase, logId, logStream);
+
+    return new Response(clientStream, {
       headers: {
         "Content-Type": "text/plain; charset=utf-8",
         "Cache-Control": "no-cache",
