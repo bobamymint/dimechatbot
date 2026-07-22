@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { NextRequest, after } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { embedText, streamChat, type ChatTurn } from "@/lib/gemini";
 import { streamChatGroq, isGroqConfigured } from "@/lib/groq";
@@ -243,7 +243,12 @@ export async function POST(req: NextRequest) {
     const clientTransform = stripMarkerTransform((full, noInfo) => clientResolvedNoop({ full, noInfo }));
     const cleanedClientStream = streamForClient.pipeThrough(clientTransform);
 
-    void logAnswerWhenDone(supabase, logId, streamForLog);
+    // Use Next.js's after() rather than a bare unawaited call — this
+    // tells the platform to keep the function alive until this finishes,
+    // instead of possibly tearing it down right after the client stream
+    // closes (which was causing `answered`/`answer` to randomly stay
+    // NULL on some questions).
+    after(() => logAnswerWhenDone(supabase, logId, streamForLog));
 
     return new Response(cleanedClientStream, {
       headers: {
