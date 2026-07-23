@@ -22,10 +22,12 @@ function buildSystemPrompt(context: string): string {
 
 Rules:
 - Answer using only facts contained in the Knowledge section.
+- Do NOT infer that a feature, product, or service exists just because the Knowledge section mentions a *similar* or *related* topic. Only confirm something exists if it is explicitly stated. If a chunk merely mentions a related term (e.g. an interest rate on overdue balances) but does not explicitly confirm the specific feature being asked about (e.g. a loan/cash-advance feature), treat that as NOT having the answer.
 - If the Knowledge section does NOT contain the answer, your reply MUST start with the exact text ${NO_INFO_MARKER} (no space after it), immediately followed by a short, friendly explanation — in the same language as the question — that you don't have that information yet. Do not guess, speculate, or use outside knowledge.
 - If the Knowledge section DOES contain the answer, do NOT include ${NO_INFO_MARKER} anywhere in your reply.
 - Be concise and friendly. Prefer short paragraphs over long lists.
 - Never invent facts, numbers, prices, or policies that are not in the Knowledge section.
+- Use the recent conversation history to understand what a short follow-up question (e.g. "which one first?", "what about that?") is actually referring to.
 
 Knowledge:
 """
@@ -120,11 +122,13 @@ function stripMarkerTransform(onDone: (fullText: string, noInfoMarkerFound: bool
 
 // Fire-and-forget: consumes the log branch of the (marker-stripped)
 // stream, then writes the clean answer text + accurate `answered` flag
-// into the chat_logs row created before streaming started.
+// + which provider generated it into the chat_logs row created before
+// streaming started.
 async function logAnswerWhenDone(
   supabase: ReturnType<typeof createAdminClient>,
   logId: string | undefined,
-  logStream: ReadableStream<Uint8Array>
+  logStream: ReadableStream<Uint8Array>,
+  provider: "groq" | "gemini"
 ) {
   if (!logId) return;
   try {
@@ -147,11 +151,27 @@ async function logAnswerWhenDone(
     const { full, noInfo } = await resultPromise;
     await supabase
       .from("chat_logs")
-      .update({ answer: full, answered: !noInfo })
+      .update({ answer: full, answered: !noInfo, provider })
       .eq("id", logId);
   } catch (e) {
     console.error("chat log answer capture failed", e);
   }
+}
+
+// Builds the text used for the knowledge-base search step. Using only
+// the latest message causes short follow-up questions ("which one
+// first?", "what about that?") to search in isolation and potentially
+// retrieve a completely different (and inconsistent) knowledge chunk
+// than the one the conversation was actually about. Concatenating the
+// last few *user* messages (skipping assistant replies, which would
+// just dilute the signal) keeps retrieval anchored to the actual
+// running topic without an extra LLM call.
+function buildRetrievalQueryText(messages: ChatTurn[]): string {
+  const recentUserMessages = messages
+    .filter((m) => m.role === "user")
+    .slice(-3)
+    .map((m) => m.content);
+  return recentUserMessages.join("\n");
 }
 
 export async function POST(req: NextRequest) {
@@ -166,8 +186,11 @@ export async function POST(req: NextRequest) {
 
     const supabase = createAdminClient();
 
-    // 1. Embed the user's latest question.
-    const queryEmbedding = await embedText(lastUserMessage.content, "RETRIEVAL_QUERY");
+    // 1. Embed a context-aware version of the question (last few user
+    // turns, not just the latest one) so follow-up questions retrieve
+    // knowledge consistent with the ongoing topic.
+    const retrievalQueryText = buildRetrievalQueryText(messages);
+    const queryEmbedding = await embedText(retrievalQueryText, "RETRIEVAL_QUERY");
 
     // 2. Retrieve the most relevant knowledge chunks via pgvector.
     const { data: matches, error } = await supabase.rpc("match_document_chunks", {
@@ -187,8 +210,7 @@ export async function POST(req: NextRequest) {
 
     // 2b. Log the question immediately, flagged by whether we found
     // relevant knowledge chunks (has_knowledge — a search-side signal).
-    // The "answered" flag (whether the model actually had an answer, per
-    // the NO_INFO_MARKER convention) is filled in once streaming
+    // The "answered" flag and "provider" are filled in once streaming
     // finishes — see logAnswerWhenDone. This insert is best-effort and
     // never blocks or fails the actual chat response.
     let logId: string | undefined;
@@ -222,33 +244,32 @@ export async function POST(req: NextRequest) {
     const systemPrompt = buildSystemPrompt(context);
     const recentHistory = messages.slice(-10);
     let stream: ReadableStream<Uint8Array>;
+    let providerUsed: "groq" | "gemini" = "gemini";
 
     if (isGroqConfigured()) {
       try {
         stream = await streamChatGroq(systemPrompt, recentHistory);
+        providerUsed = "groq";
       } catch (groqErr) {
         console.error("Groq failed, falling back to Gemini", groqErr);
         stream = await streamChat(systemPrompt, recentHistory);
+        providerUsed = "gemini";
       }
     } else {
       stream = await streamChat(systemPrompt, recentHistory);
+      providerUsed = "gemini";
     }
 
     // Split the stream: one branch goes to the client (with the marker
     // stripped out so it's never visible), the other is consumed in the
-    // background to log the clean answer + accurate answered flag.
+    // background to log the clean answer + accurate answered flag +
+    // which provider generated it.
     const [streamForClient, streamForLog] = stream.tee();
 
-    let clientResolvedNoop: (v: { full: string; noInfo: boolean }) => void = () => {};
-    const clientTransform = stripMarkerTransform((full, noInfo) => clientResolvedNoop({ full, noInfo }));
+    const clientTransform = stripMarkerTransform(() => {});
     const cleanedClientStream = streamForClient.pipeThrough(clientTransform);
 
-    // Use Next.js's after() rather than a bare unawaited call — this
-    // tells the platform to keep the function alive until this finishes,
-    // instead of possibly tearing it down right after the client stream
-    // closes (which was causing `answered`/`answer` to randomly stay
-    // NULL on some questions).
-    after(() => logAnswerWhenDone(supabase, logId, streamForLog));
+    after(() => logAnswerWhenDone(supabase, logId, streamForLog, providerUsed));
 
     return new Response(cleanedClientStream, {
       headers: {
