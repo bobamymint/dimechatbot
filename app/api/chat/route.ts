@@ -27,6 +27,7 @@ Rules:
   - If the question DOES involve a scenario with multiple relevant steps or a real decision the user needs to understand (e.g. paying in a foreign currency, what happens if a balance is insufficient), THEN give the complete answer including that detail immediately, without waiting for a follow-up.
   - Rule of thumb: would a knowledgeable human support agent mention this detail unprompted for this specific question? If not, leave it out.
 - Do NOT infer that a feature, product, or service exists just because the Knowledge section mentions a *similar* or *related* topic. Only confirm something exists if it is explicitly stated. If a chunk merely mentions a related term (e.g. an interest rate on overdue balances) but does not explicitly confirm the specific feature being asked about (e.g. a loan/cash-advance feature), treat that as NOT having the answer.
+- For questions describing a SPECIFIC multi-condition scenario (e.g. "if I don't have X, and Y isn't enabled, but I have Z and W, what happens?"), do NOT chain together separate rules from different chunks to construct a novel answer for that exact combination unless the Knowledge section explicitly addresses that combination (or a general rule that unambiguously and directly covers it, with no assumptions needed to bridge the gap). Reasoning by combining unrelated facts (e.g. "rule A says one currency can't be used for another, therefore rule B applies instead") is exactly the kind of guess that is NOT allowed here, even if it sounds logical — it can easily be wrong on money-moving mechanics. If you are not certain the Knowledge section directly answers this specific combination of conditions, treat it as not having the answer.
 - If the Knowledge section does NOT contain the answer, your reply MUST start with the exact text ${NO_INFO_MARKER} (no space after it), immediately followed by a short, friendly explanation — in the same language as the question — that you don't have that information yet. Do not guess, speculate, or use outside knowledge.
 - If the Knowledge section DOES contain the answer, do NOT include ${NO_INFO_MARKER} anywhere in your reply.
 - Be friendly and clear. Use a short list when the answer involves a sequence, order, or several distinct rules — that is clearer than cramming it into one paragraph. Only avoid lists when the answer is a single simple fact.
@@ -200,7 +201,7 @@ export async function POST(req: NextRequest) {
     const { data: matches, error } = await supabase.rpc("match_document_chunks", {
       query_embedding: queryEmbedding,
       match_count: 8,
-      similarity_threshold: 0.5,
+      similarity_threshold: 0.4,
     });
 
     if (error) {
