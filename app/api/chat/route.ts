@@ -177,7 +177,20 @@ function buildRetrievalQueryText(messages: ChatTurn[]): string {
     .filter((m) => m.role === "user")
     .slice(-3)
     .map((m) => m.content);
-  return recentUserMessages.join("\n");
+
+  const latest = recentUserMessages[recentUserMessages.length - 1] || "";
+  const priorContext = recentUserMessages.slice(0, -1);
+
+  // Include the latest question twice (start and end) so it dominates the
+  // embedded text even when prior questions in the session were about a
+  // completely different topic (e.g. user asks about JPY funding, then
+  // switches to asking about gas station payments). Without this, a topic
+  // switch mid-conversation can get its retrieval "pulled" toward the old
+  // topic and miss the chunk that actually answers the new question.
+  // Genuine follow-ups (short questions that truly depend on prior
+  // context, e.g. "which one first?") still benefit from priorContext
+  // being present at all.
+  return [latest, ...priorContext, latest].filter(Boolean).join("\n");
 }
 
 export async function POST(req: NextRequest) {
