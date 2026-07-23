@@ -76,8 +76,14 @@ export interface ChatTurn {
  */
 async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
   const res = await fetch(url, init);
-  if (res.status !== 429) return res;
-  await new Promise((resolve) => setTimeout(resolve, 2000));
+  // Retry once on 429 (rate limited) or 503 (Google's servers temporarily
+  // overloaded — happens independently of our own usage, and is usually
+  // gone within a couple seconds). Not retrying 503 previously meant that
+  // if this happened right when Groq also failed, the user saw a hard
+  // error with no fallback left at all.
+  if (res.status !== 429 && res.status !== 503) return res;
+  const delayMs = res.status === 503 ? 1500 : 2000;
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
   return fetch(url, init);
 }
 
