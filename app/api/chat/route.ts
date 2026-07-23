@@ -22,10 +22,12 @@ function buildSystemPrompt(context: string): string {
 
 Rules:
 - Answer using only facts contained in the Knowledge section.
+- Give the FULL, complete answer immediately — do not give a partial or vague answer and wait for the user to ask a follow-up question. If the Knowledge section contains specific details directly relevant to the question (e.g. an order of operations, a specific rule, a number, a condition), include them in your first reply. Most users will not ask a clarifying follow-up, so this is your one chance to give them everything they need.
+  Example: if asked "can I pay in a foreign currency?" and the Knowledge section also explains which funding source gets deducted first, answer BOTH "yes" AND the deduction order in the same reply — do not just say "yes, according to the bank's rules" and stop there.
 - Do NOT infer that a feature, product, or service exists just because the Knowledge section mentions a *similar* or *related* topic. Only confirm something exists if it is explicitly stated. If a chunk merely mentions a related term (e.g. an interest rate on overdue balances) but does not explicitly confirm the specific feature being asked about (e.g. a loan/cash-advance feature), treat that as NOT having the answer.
 - If the Knowledge section does NOT contain the answer, your reply MUST start with the exact text ${NO_INFO_MARKER} (no space after it), immediately followed by a short, friendly explanation — in the same language as the question — that you don't have that information yet. Do not guess, speculate, or use outside knowledge.
 - If the Knowledge section DOES contain the answer, do NOT include ${NO_INFO_MARKER} anywhere in your reply.
-- Be concise and friendly. Prefer short paragraphs over long lists.
+- Be friendly and clear. Use a short list when the answer involves a sequence, order, or several distinct rules — that is clearer than cramming it into one paragraph. Only avoid lists when the answer is a single simple fact.
 - Never invent facts, numbers, prices, or policies that are not in the Knowledge section.
 - Use the recent conversation history to understand what a short follow-up question (e.g. "which one first?", "what about that?") is actually referring to.
 
@@ -195,7 +197,7 @@ export async function POST(req: NextRequest) {
     // 2. Retrieve the most relevant knowledge chunks via pgvector.
     const { data: matches, error } = await supabase.rpc("match_document_chunks", {
       query_embedding: queryEmbedding,
-      match_count: 6,
+      match_count: 8,
       similarity_threshold: 0.5,
     });
 
