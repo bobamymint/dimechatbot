@@ -18,22 +18,15 @@ interface ChatRequestBody {
 const NO_INFO_MARKER = "\u27E6NO_INFO\u27E7"; // ⟦NO_INFO⟧
 
 function buildSystemPrompt(context: string): string {
-  return `You are the ${siteConfig.name} assistant. You answer questions using ONLY the "Knowledge" section below.
+  return `You are the ${siteConfig.name} assistant. Answer ONLY from the Knowledge section below — never outside knowledge, never invented facts, numbers, or policies.
 
 Rules:
-- Answer using only facts contained in the Knowledge section.
-- Match the amount of detail to what the question actually needs — don't pad a simple answer with mechanism explanations the user didn't ask about.
-  - If the question has one straightforward answer (e.g. "can I pay for gas with this card?" when the transaction is a normal single-currency domestic payment), just answer directly and briefly. Do NOT explain internal processes (like funding-source priority order, currency conversion logic) unless the question specifically involves a scenario where that detail changes the outcome or the user would need to know it (e.g. multiple currencies, insufficient balance, cross-border payment).
-  - If the question DOES involve a scenario with multiple relevant steps or a real decision the user needs to understand (e.g. paying in a foreign currency, what happens if a balance is insufficient), THEN give the complete answer including that detail immediately, without waiting for a follow-up.
-  - Rule of thumb: would a knowledgeable human support agent mention this detail unprompted for this specific question? If not, leave it out.
-- Do NOT infer that a feature, product, or service exists just because the Knowledge section mentions a *similar* or *related* topic. Only confirm something exists if it is explicitly stated. If a chunk merely mentions a related term (e.g. an interest rate on overdue balances) but does not explicitly confirm the specific feature being asked about (e.g. a loan/cash-advance feature), treat that as NOT having the answer.
-- For questions describing a SPECIFIC multi-condition scenario (e.g. "if I don't have X, and Y isn't enabled, but I have Z and W, what happens?"), do NOT chain together separate rules from different chunks to construct a novel answer for that exact combination unless the Knowledge section explicitly addresses that combination (or a general rule that unambiguously and directly covers it, with no assumptions needed to bridge the gap). Reasoning by combining unrelated facts (e.g. "rule A says one currency can't be used for another, therefore rule B applies instead") is exactly the kind of guess that is NOT allowed here, even if it sounds logical — it can easily be wrong on money-moving mechanics. If you are not certain the Knowledge section directly answers this specific combination of conditions, treat it as not having the answer.
-- The rule above is about NOT inventing unstated operational mechanics. It does NOT forbid answering analytical, comparative, or advisory questions (e.g. "which option is cheapest / most worth it / best for me") — for those, you MAY combine and reason over multiple facts that ARE explicitly stated in the Knowledge section (e.g. comparing stated fees, rates, or conditions across options) to give a helpful recommendation. The difference: comparing/reasoning over facts that are explicitly written is fine; inventing a fact or mechanic that isn't written anywhere is not. If the specific data needed for the comparison (e.g. a fee number for one of the options) isn't in the Knowledge section, say so rather than assuming it.
-- If the Knowledge section does NOT contain the answer, your reply MUST start with the exact text ${NO_INFO_MARKER} (no space after it), immediately followed by a short, friendly explanation — in the same language as the question — that you don't have that information yet. Do not guess, speculate, or use outside knowledge.
-- If the Knowledge section DOES contain the answer, do NOT include ${NO_INFO_MARKER} anywhere in your reply.
-- Be friendly and clear. Use a short list when the answer involves a sequence, order, or several distinct rules — that is clearer than cramming it into one paragraph. Only avoid lists when the answer is a single simple fact.
-- Never invent facts, numbers, prices, or policies that are not in the Knowledge section.
-- Use the recent conversation history to understand what a short follow-up question (e.g. "which one first?", "what about that?") is actually referring to.
+- Match detail to the question. Simple, single-scenario questions get a short direct answer — don't explain internal mechanisms unprompted. Questions involving a real decision or multiple steps (foreign currency, insufficient balance, cross-border) get the full relevant detail immediately, no follow-up needed.
+- Never assume a feature/service exists from a merely similar or related mention — only confirm if explicitly stated.
+- For a specific multi-condition scenario, don't chain separate rules/chunks into a novel answer unless that exact combination is explicitly covered. Exception: for analytical/comparative questions ("which is cheapest/best"), you MAY reason over multiple facts that ARE explicitly stated (e.g. comparing stated fees) — just don't invent a missing number or mechanic.
+- If Knowledge doesn't answer it, reply MUST start with the exact text ${NO_INFO_MARKER} (no space after), then a brief explanation in the question's language that you don't have that info. If Knowledge DOES answer it, never include that marker.
+- Use short lists for sequences/multiple rules; prose for single facts.
+- Use recent conversation history to resolve short follow-ups ("which one first?").
 
 Knowledge:
 """
@@ -214,7 +207,7 @@ export async function POST(req: NextRequest) {
     // 2. Retrieve the most relevant knowledge chunks via pgvector.
     const { data: matches, error } = await supabase.rpc("match_document_chunks", {
       query_embedding: queryEmbedding,
-      match_count: 8,
+      match_count: 5,
       similarity_threshold: 0.4,
     });
 
@@ -261,7 +254,7 @@ export async function POST(req: NextRequest) {
     // returned — once headers are sent to the client there's no way to
     // swap providers mid-stream.
     const systemPrompt = buildSystemPrompt(context);
-    const recentHistory = messages.slice(-10);
+    const recentHistory = messages.slice(-6);
     let stream: ReadableStream<Uint8Array>;
     let providerUsed: "groq" | "gemini" = "gemini";
 
