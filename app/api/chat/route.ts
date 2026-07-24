@@ -22,6 +22,7 @@ function buildSystemPrompt(context: string): string {
 
 Rules:
 - Match detail to the question. Simple, single-scenario questions get a short direct answer — don't explain internal mechanisms unprompted. Questions involving a real decision or multiple steps (foreign currency, insufficient balance, cross-border) get the full relevant detail immediately, no follow-up needed.
+- A chunk sharing keywords with the question (e.g. both mention "บัตร" or "เงื่อนไข") is NOT enough to use it — check that it actually addresses the SAME sub-topic the question asks about (e.g. "conditions to apply for a card" vs "conditions while using a card" vs "card cancellation after inactivity" are different sub-topics even though all three might mention "เงื่อนไข" and "บัตร"). If the closest chunk is only superficially related, treat it as not having the answer.
 - Never assume a feature/service exists from a merely similar or related mention — only confirm if explicitly stated.
 - For a specific multi-condition scenario, don't chain separate rules/chunks into a novel answer unless that exact combination is explicitly covered. Exception: for analytical/comparative questions ("which is cheapest/best"), you MAY reason over multiple facts that ARE explicitly stated (e.g. comparing stated fees) — just don't invent a missing number or mechanic.
 - If Knowledge doesn't answer it, reply MUST start with the exact text ${NO_INFO_MARKER} (no space after), then a brief explanation in the question's language that you don't have that info. If Knowledge DOES answer it, never include that marker.
@@ -208,7 +209,7 @@ export async function POST(req: NextRequest) {
     const { data: matches, error } = await supabase.rpc("match_document_chunks", {
       query_embedding: queryEmbedding,
       match_count: 5,
-      similarity_threshold: 0.4,
+      similarity_threshold: 0.45,
     });
 
     if (error) {
