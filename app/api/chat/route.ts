@@ -208,7 +208,7 @@ export async function POST(req: NextRequest) {
     // 2. Retrieve the most relevant knowledge chunks via pgvector.
     const { data: matches, error } = await supabase.rpc("match_document_chunks", {
       query_embedding: queryEmbedding,
-      match_count: 5,
+      match_count: 7,
       similarity_threshold: 0.45,
     });
 
