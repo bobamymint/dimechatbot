@@ -16,7 +16,7 @@ interface ChatRequestBody {
 // user sees (both the live stream and the stored answer text), and use
 // its presence as the primary, reliable signal for the `answered` flag
 // in chat_logs — far more accurate than guessing from wording alone.
-const NO_INFO_MARKER = "\u27E6NO_INFO\u27E7"; // ⟦NO_INFO⟧
+const NO_INFO_MARKER = "[[NO_INFO]]";
 
 function buildSystemPrompt(context: string): string {
   return `You are the ${siteConfig.name} assistant. Answer ONLY from the Knowledge below — no outside knowledge, no invented facts/numbers/policies.
@@ -75,6 +75,26 @@ function matchesFallbackPattern(text: string): boolean {
 // for the client-facing stream (so the marker is never shown) and the
 // background logging stream (so we store the clean answer + an accurate
 // flag).
+//
+// Checks TWO forms: the exact bracketed marker (⟦NO_INFO⟧) the model is
+// instructed to use, AND a plain "NO_INFO" fallback (no brackets, with
+// optional trailing punctuation/whitespace) in case the model drops the
+// bracket characters — this has been observed to happen in practice, and
+// without this fallback the raw word leaks straight into the customer's
+// chat.
+const NO_INFO_FALLBACK_RE = /^NO_INFO[:\-\s]*/i;
+
+function stripLeadingMarker(text: string): { rest: string; found: boolean } {
+  if (text.startsWith(NO_INFO_MARKER)) {
+    return { rest: text.slice(NO_INFO_MARKER.length), found: true };
+  }
+  const fallbackMatch = text.match(NO_INFO_FALLBACK_RE);
+  if (fallbackMatch) {
+    return { rest: text.slice(fallbackMatch[0].length), found: true };
+  }
+  return { rest: text, found: false };
+}
+
 function stripMarkerTransform(onDone: (fullText: string, noInfoMarkerFound: boolean) => void) {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -89,10 +109,9 @@ function stripMarkerTransform(onDone: (fullText: string, noInfoMarkerFound: bool
       if (!checked) {
         buffer += text;
         if (buffer.length >= NO_INFO_MARKER.length) {
-          if (buffer.startsWith(NO_INFO_MARKER)) {
-            noInfo = true;
-            buffer = buffer.slice(NO_INFO_MARKER.length);
-          }
+          const { rest, found } = stripLeadingMarker(buffer);
+          buffer = rest;
+          noInfo = found;
           checked = true;
           full += buffer;
           if (buffer) controller.enqueue(encoder.encode(buffer));
@@ -107,10 +126,9 @@ function stripMarkerTransform(onDone: (fullText: string, noInfoMarkerFound: bool
     },
     flush(controller) {
       if (!checked && buffer) {
-        if (buffer.startsWith(NO_INFO_MARKER)) {
-          noInfo = true;
-          buffer = buffer.slice(NO_INFO_MARKER.length);
-        }
+        const { rest, found } = stripLeadingMarker(buffer);
+        buffer = rest;
+        noInfo = found;
         full += buffer;
         if (buffer) controller.enqueue(encoder.encode(buffer));
       }
