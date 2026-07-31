@@ -2,6 +2,7 @@ import { NextRequest, after } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { embedText, streamChat, type ChatTurn } from "@/lib/gemini";
 import { streamChatGroq, isGroqConfigured } from "@/lib/groq";
+import { streamChatCerebras, isCerebrasConfigured } from "@/lib/cerebras";
 import { siteConfig } from "@/lib/config";
 
 export const runtime = "nodejs";
@@ -127,7 +128,7 @@ async function logAnswerWhenDone(
   supabase: ReturnType<typeof createAdminClient>,
   logId: string | undefined,
   logStream: ReadableStream<Uint8Array>,
-  provider: "groq" | "gemini"
+  provider: "groq" | "gemini" | "cerebras"
 ) {
   if (!logId) return;
   try {
@@ -246,17 +247,28 @@ export async function POST(req: NextRequest) {
     }
 
     // 3. Stream the answer back, grounded strictly in that context.
-    // Prefer Groq (much higher free-tier request volume) when configured,
-    // and fall back to Gemini if Groq isn't set up or its *initial*
-    // connection fails (e.g. Groq's own rate limit, bad key, network
-    // issue). This fallback only works because it's gated on the initial
-    // fetch inside streamChatGroq, before any Response/stream has been
-    // returned — once headers are sent to the client there's no way to
-    // swap providers mid-stream.
+    // Three-tier fallback: Groq (primary, highest free-tier throughput) ->
+    // Gemini (second, used for embeddings anyway so always configured) ->
+    // Cerebras (third, only reached if BOTH of the above fail at once —
+    // e.g. simultaneous rate limits, which has happened under heavy
+    // testing load). Each fallback only works because it's gated on the
+    // initial connection attempt of the next provider, before any
+    // Response/stream has been returned to the client — once headers are
+    // sent there's no way to swap providers mid-stream.
     const systemPrompt = buildSystemPrompt(context);
     const recentHistory = messages.slice(-6);
     let stream: ReadableStream<Uint8Array>;
-    let providerUsed: "groq" | "gemini" = "gemini";
+    let providerUsed: "groq" | "gemini" | "cerebras" = "gemini";
+
+    async function tryCerebrasThenGiveUp(cause: unknown): Promise<{
+      stream: ReadableStream<Uint8Array>;
+      providerUsed: "cerebras";
+    }> {
+      if (!isCerebrasConfigured()) throw cause;
+      console.error("Gemini also failed, falling back to Cerebras", cause);
+      const cerebrasStream = await streamChatCerebras(systemPrompt, recentHistory);
+      return { stream: cerebrasStream, providerUsed: "cerebras" };
+    }
 
     if (isGroqConfigured()) {
       try {
@@ -264,12 +276,24 @@ export async function POST(req: NextRequest) {
         providerUsed = "groq";
       } catch (groqErr) {
         console.error("Groq failed, falling back to Gemini", groqErr);
-        stream = await streamChat(systemPrompt, recentHistory);
-        providerUsed = "gemini";
+        try {
+          stream = await streamChat(systemPrompt, recentHistory);
+          providerUsed = "gemini";
+        } catch (geminiErr) {
+          const result = await tryCerebrasThenGiveUp(geminiErr);
+          stream = result.stream;
+          providerUsed = result.providerUsed;
+        }
       }
     } else {
-      stream = await streamChat(systemPrompt, recentHistory);
-      providerUsed = "gemini";
+      try {
+        stream = await streamChat(systemPrompt, recentHistory);
+        providerUsed = "gemini";
+      } catch (geminiErr) {
+        const result = await tryCerebrasThenGiveUp(geminiErr);
+        stream = result.stream;
+        providerUsed = result.providerUsed;
+      }
     }
 
     // Split the stream: one branch goes to the client (with the marker
