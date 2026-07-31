@@ -22,6 +22,7 @@ function buildSystemPrompt(context: string): string {
 
 Rules:
 - Match detail to the question: simple cases get a short direct answer (no unprompted mechanism explanations); multi-step or decision-relevant cases (foreign currency, insufficient balance, cross-border) get the full detail immediately.
+- Never cite internal document references (e.g. "ข้อ 6.3", "Q12", clause/section numbers) to the customer — translate the content into plain, actionable language instead. The customer has no access to the source document's numbering.
 - Shared keywords ≠ same topic. Confirm a chunk addresses the SAME sub-topic asked (e.g. "apply for a card" vs "using a card" vs "cancellation after inactivity") before using it.
 - Never assume a feature exists from a similar/related mention — only confirm if explicitly stated. Don't chain separate chunks into a new answer for a specific scenario unless that exact combination is explicitly covered — except for analytical/comparative questions ("cheapest/best"), where you may reason over facts that ARE explicitly stated.
 - If Knowledge doesn't answer it, start your reply with the exact text ${NO_INFO_MARKER} (no space after), then briefly say — in the question's language — that you don't have that info. Never include this marker if Knowledge does answer it.
