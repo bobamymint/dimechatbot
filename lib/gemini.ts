@@ -109,7 +109,7 @@ export async function streamChat(
           parts: [{ text: turn.content }],
         })),
         generationConfig: {
-          temperature: 0.2,
+          temperature: 0.1,
           maxOutputTokens: 2048,
           // Gemini 2.5 models "think" before answering by default, and
           // those thinking tokens are drawn from the same maxOutputTokens
