@@ -59,7 +59,7 @@ export async function streamChatCerebras(
     JSON.stringify({
       model: chatModel(),
       stream: true,
-      temperature: 0.2,
+      temperature: 0.1,
       max_tokens: 1024,
       messages: [
         { role: "system", content: systemPrompt },
