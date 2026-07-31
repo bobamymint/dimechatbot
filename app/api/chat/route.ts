@@ -208,7 +208,7 @@ export async function POST(req: NextRequest) {
     // 2. Retrieve the most relevant knowledge chunks via pgvector.
     const { data: matches, error } = await supabase.rpc("match_document_chunks", {
       query_embedding: queryEmbedding,
-      match_count: 7,
+      match_count: 5,
       similarity_threshold: 0.45,
     });
 
@@ -219,7 +219,16 @@ export async function POST(req: NextRequest) {
     const matchList = (matches || []) as { content: string; similarity: number }[];
     const hasKnowledge = matchList.length > 0;
     const topSimilarity = hasKnowledge ? matchList[0].similarity : null;
-    const context = matchList.map((m) => m.content).join("\n\n---\n\n");
+    // Hard safety cap: even with match_count trimmed down, a handful of
+    // unusually long chunks (e.g. a big fee/rate table) could still add
+    // up to more tokens than Groq's free-tier per-minute ceiling allows
+    // in a single request. Truncating here guarantees headroom no matter
+    // what gets retrieved, rather than relying solely on match_count.
+    const MAX_CONTEXT_CHARS = 3500;
+    let context = matchList.map((m) => m.content).join("\n\n---\n\n");
+    if (context.length > MAX_CONTEXT_CHARS) {
+      context = context.slice(0, MAX_CONTEXT_CHARS) + "\n\n(context truncated)";
+    }
 
     // 2b. Log the question immediately, flagged by whether we found
     // relevant knowledge chunks (has_knowledge — a search-side signal).
@@ -256,7 +265,7 @@ export async function POST(req: NextRequest) {
     // Response/stream has been returned to the client — once headers are
     // sent there's no way to swap providers mid-stream.
     const systemPrompt = buildSystemPrompt(context);
-    const recentHistory = messages.slice(-6);
+    const recentHistory = messages.slice(-4);
     let stream: ReadableStream<Uint8Array>;
     let providerUsed: "groq" | "gemini" | "cerebras" = "gemini";
 
