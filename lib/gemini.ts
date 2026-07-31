@@ -13,12 +13,13 @@ function apiKey() {
 }
 
 function chatModel() {
-  // gemini-2.5-flash-lite has a much higher free-tier quota than
-  // gemini-2.5-flash (roughly 4x the daily requests, 3x per-minute) for
-  // essentially the same quality on a straightforward "answer from
-  // retrieved knowledge" chatbot like this one, so it's the better free
-  // default. Override with GEMINI_CHAT_MODEL if you want something else.
-  return process.env.GEMINI_CHAT_MODEL || "gemini-2.5-flash-lite";
+  // Default only kicks in if GEMINI_CHAT_MODEL isn't set in Vercel at
+  // all — kept in sync with the version actually configured there
+  // (gemini-3.5-flash as of this project) so a missing env var doesn't
+  // silently fall back to an older model that may since be deprecated
+  // for new API keys (as gemini-2.5-flash was earlier in this project).
+  // Override with GEMINI_CHAT_MODEL to use a different version.
+  return process.env.GEMINI_CHAT_MODEL || "gemini-3.5-flash";
 }
 
 function embeddingModel() {
