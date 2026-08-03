@@ -25,10 +25,14 @@ function apiKey() {
 }
 
 function chatModel() {
-  // llama-3.3-70b is a safe, commonly-available default; check Cerebras's
-  // current free model list at cloud.cerebras.ai if this stops working —
-  // their free catalog rotates more than Groq's does.
-  return process.env.CEREBRAS_CHAT_MODEL || "llama-3.3-70b";
+  // Cerebras's free-tier model catalog is unusually volatile — it has
+  // been observed to drop entire model families (including the Llama
+  // line) with no warning. "gpt-oss-120b" is listed as one of Cerebras's
+  // officially supported "production" models as of this writing, but
+  // check https://cloud.cerebras.ai (API Keys / Models page) if this
+  // ever starts 404ing again — that's exactly what happened to the
+  // previous default (llama-3.3-70b) here.
+  return process.env.CEREBRAS_CHAT_MODEL || "gpt-oss-120b";
 }
 
 async function fetchCerebras(body: string): Promise<Response> {
