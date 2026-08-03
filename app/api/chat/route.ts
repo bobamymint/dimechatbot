@@ -6,6 +6,13 @@ import { streamChatCerebras, isCerebrasConfigured } from "@/lib/cerebras";
 import { siteConfig } from "@/lib/config";
 
 export const runtime = "nodejs";
+// Vercel's Hobby (free) plan defaults to a 10-second function timeout —
+// too short when Groq's own retry-after-rate-limit logic (in lib/groq.ts)
+// waits up to 15s before even starting to stream a response. Without
+// this, Vercel kills the request mid-retry and the user sees a 500 error
+// even though Groq would have answered successfully a few seconds later.
+// 60s is the maximum allowed on Hobby without enabling Fluid Compute.
+export const maxDuration = 60;
 
 interface ChatRequestBody {
   messages: ChatTurn[];
@@ -24,7 +31,7 @@ function buildSystemPrompt(context: string): string {
 Rules:
 - If Knowledge doesn't mention a specific named feature/service (e.g. Apple Pay, a minimum balance, a specific integration) at all, you MUST treat it as unknown — never answer "yes" or "no" from general knowledge of how debit cards typically work. This applies even when you feel confident — confidence from general knowledge is exactly the failure mode to avoid here.
 - Match detail to complexity: simple questions get short direct answers; multi-step/decision cases (FX, insufficient balance, cross-border) get full detail immediately, unprompted.
-- Never cite internal doc references (clause numbers, "Q12", etc.) — translate into plain actionable language.
+- Never cite internal doc references (clause numbers like "ข้อ 6.3", "ตามข้อ 3.10.4", or "Q12") — translate into plain actionable language instead. Example: instead of "ต้องติดต่อธนาคารทันทีเพื่อระงับการใช้บัตรตามที่กำหนดไว้ในข้อ 6.3" write "ต้องติดต่อธนาคารทันทีเพื่อระงับการใช้บัตร" — drop the clause reference entirely, don't just reword around it.
 - A chunk sharing keywords isn't enough — confirm it matches the SAME sub-topic and procedure (e.g. applying vs. using vs. cancelling; paying vs. refund) before using it. Never blend sentences from chunks describing different procedures into one answer.
 - Don't parrot vague hedges ("ตามที่ธนาคารกำหนด") as the whole answer. If a value truly varies daily (e.g. FX rate), say so and point to the app; if Knowledge has a concrete number, give that instead.
 - Never mention internal terms like "Knowledge", "context", or "chunk" — just answer naturally.
@@ -170,6 +177,17 @@ async function logAnswerWhenDone(
     }
 
     const { full, noInfo } = await resultPromise;
+
+    // Monitoring only (not a fix): the model is instructed never to cite
+    // internal clause numbers (e.g. "ข้อ 6.3"), but smaller models don't
+    // always follow abstract instructions reliably. This doesn't strip
+    // anything from what the user already saw — it just makes violations
+    // visible in Vercel's logs so we can tell whether the prompt rule is
+    // actually working over time, without needing a user to spot it.
+    if (/(?:ตาม)?ข้อ\s*\d+(?:\.\d+){1,3}/.test(full)) {
+      console.error("⚠️ Answer leaked an internal clause reference despite the rule:", full);
+    }
+
     await supabase
       .from("chat_logs")
       .update({ answer: full, answered: !noInfo, provider })
