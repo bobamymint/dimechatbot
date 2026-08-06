@@ -2,7 +2,6 @@ import { NextRequest, after } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { embedText, streamChat, type ChatTurn } from "@/lib/gemini";
 import { streamChatGroq, isGroqConfigured } from "@/lib/groq";
-import { streamChatCerebras, isCerebrasConfigured } from "@/lib/cerebras";
 import { siteConfig } from "@/lib/config";
 
 export const runtime = "nodejs";
@@ -26,18 +25,20 @@ interface ChatRequestBody {
 const NO_INFO_MARKER = "[[NO_INFO]]";
 
 function buildSystemPrompt(context: string): string {
-  return `You are the ${siteConfig.name} assistant. Answer ONLY from the Knowledge below — no outside knowledge, no invented facts/numbers/policies, no general assumptions about what "cards like this usually have."
+  return `You are an internal reference tool used BY Dime! Customer Care (CC) staff while on calls with customers — not a customer-facing bot. The reader IS the support staff. Answer ONLY from the Knowledge below — no outside knowledge, no invented facts/numbers/policies, no general assumptions about what "cards like this usually have."
 
 Rules:
+- CRITICAL: never answer "แนะนำติดต่อ Dime! Customer Support" or similar — the reader already IS Dime! Customer Support. If Knowledge contains the concrete answer/procedure, give it directly and completely, with no follow-up question needed. Only if Knowledge genuinely has nothing on the topic, say so plainly and, if it's a troubleshooting-style question, give the general troubleshooting checklist (see below) ending with escalation to "หน่วยงานที่เกี่ยวข้อง" (or name the closest relevant function if Knowledge suggests one, e.g. Mastercard/เครือข่ายบัตร, ด้านธุรกรรม) — never a bare "no info" for troubleshooting questions.
+- Don't parrot vague hedges ("ตามที่ธนาคารกำหนด", "ตามลำดับที่กำหนด") as the whole answer — always state the actual concrete specifics from Knowledge (e.g. name the real order/numbers/steps) instead of describing that specifics exist somewhere.
 - If Knowledge doesn't mention a specific named feature/service (e.g. Apple Pay, a minimum balance, a specific integration) at all, you MUST treat it as unknown — never answer "yes" or "no" from general knowledge of how debit cards typically work. This applies even when you feel confident — confidence from general knowledge is exactly the failure mode to avoid here.
-- Match detail to complexity: simple questions get short direct answers; multi-step/decision cases (FX, insufficient balance, cross-border) get full detail immediately, unprompted.
+- Match detail to complexity: simple questions get short direct answers; multi-step/decision cases (FX, insufficient balance, cross-border, troubleshooting) get full detail immediately, unprompted, with no follow-up question needed.
 - Never cite internal doc references (clause numbers like "ข้อ 6.3", "ตามข้อ 3.10.4", or "Q12") — translate into plain actionable language instead. Example: instead of "ต้องติดต่อธนาคารทันทีเพื่อระงับการใช้บัตรตามที่กำหนดไว้ในข้อ 6.3" write "ต้องติดต่อธนาคารทันทีเพื่อระงับการใช้บัตร" — drop the clause reference entirely, don't just reword around it.
-- A chunk sharing keywords isn't enough — confirm it matches the SAME sub-topic and procedure (e.g. applying vs. using vs. cancelling; paying vs. refund) before using it. Never blend sentences from chunks describing different procedures into one answer.
-- Don't parrot vague hedges ("ตามที่ธนาคารกำหนด") as the whole answer. If a value truly varies daily (e.g. FX rate), say so and point to the app; if Knowledge has a concrete number, give that instead.
+- A chunk sharing keywords isn't enough — confirm it matches the SAME sub-topic and procedure (e.g. applying vs. using vs. cancelling; paying vs. refund; transferring money vs. exchanging currency) before using it. Never blend sentences from chunks describing different procedures into one answer.
+- If a customer names a SPECIFIC merchant/store/situation when asking why something failed (e.g. "ตัดร้าน 7-Eleven ไม่ผ่าน"), treat it the same as a general "specific merchant" troubleshooting question and apply the matching checklist — don't treat the named merchant as something to look up, and don't say no info just because that exact merchant isn't named in Knowledge.
 - Never mention internal terms like "Knowledge", "context", or "chunk" — just answer naturally.
 - Never assume a feature exists from a related mention, and never chain separate facts into a new scenario-specific answer unless that exact combination is explicitly stated — except when comparing facts that ARE explicitly stated (e.g. "which is cheapest"). If Knowledge explicitly states something is NOT allowed (e.g. "ไม่สามารถ...ได้"), that prohibition wins — never answer "yes" based on general permission language elsewhere that doesn't address this specific restriction.
-- If Knowledge doesn't answer it, start with the exact text ${NO_INFO_MARKER} (no space after) then briefly explain, in the question's language, that you don't know — omit the marker entirely if you do know.
-- Use short lists for sequences/multiple rules, prose for single facts; use recent history to resolve short follow-ups.
+- If Knowledge doesn't answer it at all and it's not a troubleshooting-style question, start with the exact text ${NO_INFO_MARKER} (no space after) then briefly explain, in the question's language, that you don't know — omit the marker entirely if you do know.
+- Use short numbered lists for sequences/troubleshooting steps/multiple rules, prose for single facts; use recent history to resolve short follow-ups.
 
 Knowledge:
 """
@@ -156,7 +157,7 @@ async function logAnswerWhenDone(
   supabase: ReturnType<typeof createAdminClient>,
   logId: string | undefined,
   logStream: ReadableStream<Uint8Array>,
-  provider: "groq" | "gemini" | "cerebras"
+  provider: "groq" | "gemini"
 ) {
   if (!logId) return;
   try {
@@ -247,7 +248,7 @@ export async function POST(req: NextRequest) {
     // 2. Retrieve the most relevant knowledge chunks via pgvector.
     const { data: matches, error } = await supabase.rpc("match_document_chunks", {
       query_embedding: queryEmbedding,
-      match_count: 8,
+      match_count: 12,
       similarity_threshold: 0.45,
     });
 
@@ -258,12 +259,15 @@ export async function POST(req: NextRequest) {
     const matchList = (matches || []) as { content: string; similarity: number }[];
     const hasKnowledge = matchList.length > 0;
     const topSimilarity = hasKnowledge ? matchList[0].similarity : null;
-    // Hard safety cap: even with match_count trimmed down, a handful of
-    // unusually long chunks (e.g. a big fee/rate table) could still add
-    // up to more tokens than Groq's free-tier per-minute ceiling allows
-    // in a single request. Truncating here guarantees headroom no matter
-    // what gets retrieved, rather than relying solely on match_count.
-    const MAX_CONTEXT_CHARS = 3500;
+    // Hard safety cap. With a 128-topic knowledge base full of near-duplicate
+    // vocabulary ("บัตร", "ค่าธรรมเนียม", "แอป Dime!" everywhere), the top-
+    // ranked chunk by similarity is often NOT the one with the actual answer
+    // — so match_count alone isn't enough; the cap must be generous enough
+    // that most of the 12 retrieved chunks actually survive into context,
+    // not just the first ~3. 7500 chars (~1900 tokens) still leaves solid
+    // headroom under Groq's 6000 TPM ceiling alongside the system prompt
+    // and recent history — see chat history for the token math.
+    const MAX_CONTEXT_CHARS = 7500;
     let context = matchList.map((m) => m.content).join("\n\n---\n\n");
     if (context.length > MAX_CONTEXT_CHARS) {
       context = context.slice(0, MAX_CONTEXT_CHARS) + "\n\n(context truncated)";
@@ -295,28 +299,19 @@ export async function POST(req: NextRequest) {
     }
 
     // 3. Stream the answer back, grounded strictly in that context.
-    // Three-tier fallback: Groq (primary, highest free-tier throughput) ->
-    // Gemini (second, used for embeddings anyway so always configured) ->
-    // Cerebras (third, only reached if BOTH of the above fail at once —
-    // e.g. simultaneous rate limits, which has happened under heavy
-    // testing load). Each fallback only works because it's gated on the
-    // initial connection attempt of the next provider, before any
-    // Response/stream has been returned to the client — once headers are
-    // sent there's no way to swap providers mid-stream.
+    // Two-tier fallback: Groq (primary, highest free-tier throughput) ->
+    // Gemini (second, used for embeddings anyway so always configured).
+    // (A third Cerebras tier was tried and removed — its free model
+    // catalog proved too unstable for this project to depend on; see
+    // git history if reviving it later.) This fallback only works
+    // because it's gated on the initial connection attempt of the next
+    // provider, before any Response/stream has been returned to the
+    // client — once headers are sent there's no way to swap providers
+    // mid-stream.
     const systemPrompt = buildSystemPrompt(context);
     const recentHistory = messages.slice(-4);
     let stream: ReadableStream<Uint8Array>;
-    let providerUsed: "groq" | "gemini" | "cerebras" = "gemini";
-
-    async function tryCerebrasThenGiveUp(cause: unknown): Promise<{
-      stream: ReadableStream<Uint8Array>;
-      providerUsed: "cerebras";
-    }> {
-      if (!isCerebrasConfigured()) throw cause;
-      console.error("Gemini also failed, falling back to Cerebras", cause);
-      const cerebrasStream = await streamChatCerebras(systemPrompt, recentHistory);
-      return { stream: cerebrasStream, providerUsed: "cerebras" };
-    }
+    let providerUsed: "groq" | "gemini" = "gemini";
 
     if (isGroqConfigured()) {
       try {
@@ -324,24 +319,12 @@ export async function POST(req: NextRequest) {
         providerUsed = "groq";
       } catch (groqErr) {
         console.error("Groq failed, falling back to Gemini", groqErr);
-        try {
-          stream = await streamChat(systemPrompt, recentHistory);
-          providerUsed = "gemini";
-        } catch (geminiErr) {
-          const result = await tryCerebrasThenGiveUp(geminiErr);
-          stream = result.stream;
-          providerUsed = result.providerUsed;
-        }
-      }
-    } else {
-      try {
         stream = await streamChat(systemPrompt, recentHistory);
         providerUsed = "gemini";
-      } catch (geminiErr) {
-        const result = await tryCerebrasThenGiveUp(geminiErr);
-        stream = result.stream;
-        providerUsed = result.providerUsed;
       }
+    } else {
+      stream = await streamChat(systemPrompt, recentHistory);
+      providerUsed = "gemini";
     }
 
     // Split the stream: one branch goes to the client (with the marker
