@@ -4,11 +4,18 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const admin = await requireAdmin();
   if (!admin.ok) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  // Defaults to "pending" (the normal review queue). Pass
+  // ?status=rejected to see rejected ones — used by the "Rejected" tab
+  // on /admin/suggestions so a mis-click can be undone via /restore
+  // instead of being gone for good.
+  const statusParam = req.nextUrl.searchParams.get("status");
+  const status = statusParam === "rejected" ? "rejected" : "pending";
 
   const supabase = createAdminClient();
   const { data, error } = await supabase
@@ -16,8 +23,10 @@ export async function GET() {
     .select(
       "id, representative_question, occurrence_count, draft_answer, edited_answer, status, created_at"
     )
-    .eq("status", "pending")
-    .order("occurrence_count", { ascending: false });
+    .eq("status", status)
+    .order(status === "pending" ? "occurrence_count" : "reviewed_at", {
+      ascending: false,
+    });
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
