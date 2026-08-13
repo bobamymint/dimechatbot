@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { siteConfig } from "@/lib/config";
 
@@ -20,6 +21,8 @@ export default function DocumentsPage() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [consolidating, setConsolidating] = useState(false);
+  const [consolidateMessage, setConsolidateMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
@@ -73,6 +76,39 @@ export default function DocumentsPage() {
     loadDocuments();
   }
 
+  // Merges every individually-approved suggestion (each one its own
+  // small [Suggested] document — see approve/route.ts) into a single
+  // combined FAQ document, to keep this list from growing one row per
+  // approved question. Safe to run any time; does nothing if there's
+  // fewer than 2 to merge.
+  async function handleConsolidate() {
+    if (
+      !confirm(
+        "Merge all individually-approved suggestions into one combined FAQ document? The small originals will be deleted (their content is preserved in the merged document)."
+      )
+    )
+      return;
+
+    setConsolidating(true);
+    setConsolidateMessage(null);
+
+    const res = await fetch("/api/admin/documents/consolidate", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    setConsolidating(false);
+
+    if (!res.ok) {
+      setConsolidateMessage(data.error || "Consolidate failed");
+      return;
+    }
+
+    setConsolidateMessage(
+      data.merged > 0
+        ? `Merged ${data.merged} suggestion${data.merged === 1 ? "" : "s"} into one document.`
+        : data.message || "Nothing to consolidate."
+    );
+    loadDocuments();
+  }
+
   async function handleSignOut() {
     const supabase = createClient();
     await supabase.auth.signOut();
@@ -98,6 +134,13 @@ export default function DocumentsPage() {
           Sign out
         </button>
       </header>
+
+      <nav className="mb-6 flex gap-4 text-xs font-medium">
+        <span className="text-brand">Documents</span>
+        <Link href="/admin/suggestions" className="text-ink-950/50 hover:text-ink-950">
+          Suggestions
+        </Link>
+      </nav>
 
       <form
         onSubmit={handleUpload}
@@ -129,7 +172,19 @@ export default function DocumentsPage() {
       </form>
 
       <div className="space-y-2">
-        <h2 className="text-sm font-medium text-ink-950">Documents</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium text-ink-950">Documents</h2>
+          <button
+            onClick={handleConsolidate}
+            disabled={consolidating}
+            className="text-xs font-medium text-ink-950/50 hover:text-ink-950 disabled:opacity-50"
+          >
+            {consolidating ? "Merging…" : "Merge suggestion documents"}
+          </button>
+        </div>
+        {consolidateMessage && (
+          <p className="text-xs text-ink-950/50">{consolidateMessage}</p>
+        )}
         {loading && <p className="text-sm text-ink-950/40">Loading…</p>}
         {!loading && documents.length === 0 && (
           <p className="text-sm text-ink-950/40">No documents uploaded yet.</p>
