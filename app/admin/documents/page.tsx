@@ -23,6 +23,11 @@ export default function DocumentsPage() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [consolidating, setConsolidating] = useState(false);
   const [consolidateMessage, setConsolidateMessage] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+  const [editLoading, setEditLoading] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
@@ -116,6 +121,55 @@ export default function DocumentsPage() {
     router.refresh();
   }
 
+  // Opens the inline editor for a document, loading its current full
+  // text (chunks joined back together) to edit. Works the same for a
+  // single approved suggestion or a merged multi-question FAQ document
+  // — for a merged one, find the Q&A block to update inside the text.
+  async function handleStartEdit(id: string) {
+    setEditingId(id);
+    setEditText("");
+    setEditError(null);
+    setEditLoading(true);
+
+    const res = await fetch(`/api/admin/documents/${id}`);
+    const data = await res.json().catch(() => ({}));
+    setEditLoading(false);
+
+    if (!res.ok) {
+      setEditError(data.error || "Failed to load document text");
+      return;
+    }
+    setEditText(data.text || "");
+  }
+
+  function handleCancelEdit() {
+    setEditingId(null);
+    setEditText("");
+    setEditError(null);
+  }
+
+  async function handleSaveEdit(id: string) {
+    setEditSaving(true);
+    setEditError(null);
+
+    const res = await fetch(`/api/admin/documents/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: editText }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setEditSaving(false);
+
+    if (!res.ok) {
+      setEditError(data.error || "Save failed");
+      return;
+    }
+
+    setEditingId(null);
+    setEditText("");
+    loadDocuments();
+  }
+
   return (
     <div className="mx-auto max-w-3xl px-4 py-10">
       <header className="mb-8 flex items-center justify-between">
@@ -192,22 +246,71 @@ export default function DocumentsPage() {
         {documents.map((doc) => (
           <div
             key={doc.id}
-            className="flex items-center justify-between rounded-xl border border-ink-950/10 bg-white px-4 py-3"
+            className="rounded-xl border border-ink-950/10 bg-white px-4 py-3"
           >
-            <div>
-              <p className="text-sm font-medium text-ink-950">{doc.title}</p>
-              <p className="text-xs text-ink-950/40">
-                {doc.filename} · {doc.chunkCount} chunk{doc.chunkCount === 1 ? "" : "s"} ·{" "}
-                <StatusLabel status={doc.status} />
-                {doc.status === "failed" && doc.error ? ` — ${doc.error}` : ""}
-              </p>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-ink-950">{doc.title}</p>
+                <p className="text-xs text-ink-950/40">
+                  {doc.filename} · {doc.chunkCount} chunk{doc.chunkCount === 1 ? "" : "s"} ·{" "}
+                  <StatusLabel status={doc.status} />
+                  {doc.status === "failed" && doc.error ? ` — ${doc.error}` : ""}
+                </p>
+              </div>
+              <div className="flex shrink-0 gap-3">
+                {editingId === doc.id ? (
+                  <button
+                    onClick={handleCancelEdit}
+                    className="text-xs font-medium text-ink-950/50 hover:text-ink-950"
+                  >
+                    Cancel
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => handleStartEdit(doc.id)}
+                    className="text-xs font-medium text-ink-950/50 hover:text-ink-950"
+                  >
+                    Edit
+                  </button>
+                )}
+                <button
+                  onClick={() => handleDelete(doc.id)}
+                  className="text-xs font-medium text-red-600 hover:text-red-700"
+                >
+                  Delete
+                </button>
+              </div>
             </div>
-            <button
-              onClick={() => handleDelete(doc.id)}
-              className="text-xs font-medium text-red-600 hover:text-red-700"
-            >
-              Delete
-            </button>
+
+            {editingId === doc.id && (
+              <div className="mt-3 space-y-2 border-t border-ink-950/10 pt-3">
+                {editLoading && <p className="text-xs text-ink-950/40">Loading text…</p>}
+                {!editLoading && (
+                  <textarea
+                    value={editText}
+                    onChange={(e) => setEditText(e.target.value)}
+                    rows={10}
+                    className="w-full rounded-xl border border-ink-950/10 px-3 py-2 text-sm outline-none focus:border-brand"
+                  />
+                )}
+                {editError && <p className="text-xs text-red-600">{editError}</p>}
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleSaveEdit(doc.id)}
+                    disabled={editLoading || editSaving}
+                    className="rounded-xl bg-brand px-4 py-2 text-xs font-medium text-white transition hover:bg-brand-600 disabled:opacity-50"
+                  >
+                    {editSaving ? "Saving…" : "Save"}
+                  </button>
+                  <button
+                    onClick={handleCancelEdit}
+                    className="rounded-xl border border-ink-950/10 px-4 py-2 text-xs font-medium text-ink-950/70 hover:text-ink-950"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         ))}
       </div>
