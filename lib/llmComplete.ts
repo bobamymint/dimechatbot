@@ -18,7 +18,7 @@ function groqApiKey() {
 }
 
 function groqChatModel() {
-  return process.env.GROQ_CHAT_MODEL || "llama-3.1-8b-instant";
+  return process.env.GROQ_CHAT_MODEL || "openai/gpt-oss-20b";
 }
 
 function geminiApiKey() {
