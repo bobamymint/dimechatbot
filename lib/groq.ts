@@ -24,7 +24,7 @@ function chatModel() {
   // Groq (built for exactly this kind of high-volume, straightforward
   // Q&A workload). For noticeably stronger reasoning at a much lower
   // daily cap, set GROQ_CHAT_MODEL=llama-3.3-70b-versatile instead.
-  return process.env.GROQ_CHAT_MODEL || "llama-3.1-8b-instant";
+  return process.env.GROQ_CHAT_MODEL || "openai/gpt-oss-20b";
 }
 
 // The free tier also has a fairly tight tokens-per-minute cap (6000 TPM for
